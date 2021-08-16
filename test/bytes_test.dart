@@ -89,25 +89,25 @@ void main() {
       });
     });
 
-    group('bufferToInt', () {
-      test('should convert a int to hex', () {
-        var buf = hex.decode('5b9ac8');
-        var i = bytes.bufferToInt(buf);
-        expect(i, 6003400);
-      });
-      test('should convert empty input to 0', () {
-        expect(bytes.bufferToInt(Uint8List(0)), 0);
-      });
-    });
+    // group('bufferToInt', () {
+    //   test('should convert a int to hex', () {
+    //     var buf = hex.decode('5b9ac8');
+    //     var i = bytes.bufferToInt(buf);
+    //     expect(i, 6003400);
+    //   });
+    //   test('should convert empty input to 0', () {
+    //     expect(bytes.bufferToInt(Uint8List(0)), 0);
+    //   });
+    // });
 
-    group('bufferToHex', () {
-      test('should convert a buffer to hex', () {
-        expect(bytes.bufferToHex(hex.decode('5b9ac8')), '0x5b9ac8');
-      });
-      test('empty buffer', () {
-        expect(bytes.bufferToHex(Uint8List(0)), '0x');
-      });
-    });
+    // group('bufferToHex', () {
+    //   test('should convert a buffer to hex', () {
+    //     expect(bytes.bufferToHex(hex.decode('5b9ac8')), '0x5b9ac8');
+    //   });
+    //   test('empty buffer', () {
+    //     expect(bytes.bufferToHex(Uint8List(0)), '0x');
+    //   });
+    // });
 
     group('fromSigned', () {
       test('should convert an unsigned (negative) buffer to a singed number',

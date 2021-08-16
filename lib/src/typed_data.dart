@@ -7,11 +7,6 @@ import 'package:ethereum_util/src/abi.dart' as ethAbi;
 import 'package:ethereum_util/src/bytes.dart';
 import 'package:ethereum_util/src/signature.dart';
 import 'package:ethereum_util/src/utils.dart';
-import 'package:json_schema/json_schema.dart';
-import 'package:meta/meta.dart';
-import 'package:json_annotation/json_annotation.dart';
-
-part 'typed_data.g.dart';
 
 /// Returns a continuous, hex-prefixed hex value for the signature,
 /// suitable for inclusion in a JSON transaction's data field.
@@ -33,8 +28,9 @@ String signTypedData(Uint8List privateKey, MsgParams msgParams) {
 
 /// Return address of a signer that did signTypedData.
 /// Expects the same data that were used for signing. sig is a prefixed signature.
-String recoverTypedSignature(MsgParams msgParams) {
+String? recoverTypedSignature(MsgParams msgParams) {
   var publicKey = msgParams.recoverPublicKey();
+  if (publicKey == null) return null;
   var sender = publicKeyToAddress(publicKey);
   return bufferToHex(sender);
 }
@@ -47,7 +43,7 @@ String _padWithZeroes(String number, int length) {
   return myString;
 }
 
-String normalize(dynamic input) {
+String? normalize(dynamic input) {
   if (input == null) {
     return null;
   }
@@ -68,9 +64,9 @@ class MsgParams {
   TypedData data;
   String sig;
 
-  MsgParams({this.data, this.sig});
+  MsgParams({required this.data, required this.sig});
 
-  Uint8List recoverPublicKey() {
+  Uint8List? recoverPublicKey() {
     var sigParams = fromRpcSig(sig);
     return recoverPublicKeyFromSignature(
         ECDSASignature(sigParams.r, sigParams.s, sigParams.v),
@@ -78,44 +74,64 @@ class MsgParams {
   }
 }
 
-@JsonSerializable(nullable: true)
 class TypedData {
   Map<String, List<TypedDataField>> types;
   String primaryType;
-  EIP712Domain domain;
+  EIP712Domain? domain;
   Map<String, dynamic> message;
 
-  TypedData({this.types, this.primaryType, this.domain, this.message});
+  TypedData(
+      {required this.types,
+      required this.primaryType,
+      required this.domain,
+      required this.message});
 
-  factory TypedData.fromJson(Map<String, dynamic> json) =>
-      _$TypedDataFromJson(json);
+  factory TypedData.fromJson(Map<String, dynamic> json) => TypedData(
+      types: (json['types'] as Map<String, dynamic>).map(
+        (k, e) => MapEntry(
+            k,
+            (e as List)
+                .map((e) => TypedDataField.fromJson(e as Map<String, dynamic>))
+                .toList()),
+      ),
+      primaryType: json['primaryType'] as String,
+      domain: json['domain'] == null
+          ? null
+          : EIP712Domain.fromJson(json['domain'] as Map<String, dynamic>),
+      message: json['message'] as Map<String, dynamic>);
 
-  @override
-  Map<String, dynamic> toJson() => _$TypedDataToJson(this);
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'types': types,
+        'primaryType': primaryType,
+        'domain': domain,
+        'message': message
+      };
 }
 
-@JsonSerializable(nullable: true)
 class TypedDataField {
   String name;
   String type;
 
-  TypedDataField({@required this.name, @required this.type});
+  TypedDataField({required this.name, required this.type});
 
-  factory TypedDataField.fromJson(Map<String, dynamic> json) =>
-      _$TypedDataFieldFromJson(json);
+  factory TypedDataField.fromJson(Map<String, dynamic> json) => TypedDataField(
+      name: json['name'] as String, type: json['type'] as String);
 
-  @override
-  Map<String, dynamic> toJson() => _$TypedDataFieldToJson(this);
+  Map<String, dynamic> toJson() =>
+      <String, dynamic>{'name': name, 'type': type};
 }
 
-@JsonSerializable(nullable: true)
 class EIP712Domain {
-  String name;
-  String version;
-  int chainId;
-  String verifyingContract;
+  String? name;
+  String? version;
+  int? chainId;
+  String? verifyingContract;
 
-  EIP712Domain({this.name, this.version, this.chainId, this.verifyingContract});
+  EIP712Domain(
+      {required this.name,
+      required this.version,
+      required this.chainId,
+      required this.verifyingContract});
 
   dynamic operator [](String key) {
     switch (key) {
@@ -132,11 +148,18 @@ class EIP712Domain {
     }
   }
 
-  factory EIP712Domain.fromJson(Map<String, dynamic> json) =>
-      _$EIP712DomainFromJson(json);
+  factory EIP712Domain.fromJson(Map<String, dynamic> json) => EIP712Domain(
+      name: json['name'] as String,
+      version: json['version'] as String,
+      chainId: json['chainId'] as int,
+      verifyingContract: json['verifyingContract'] as String);
 
-  @override
-  Map<String, dynamic> toJson() => _$EIP712DomainToJson(this);
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'name': name,
+        'version': version,
+        'chainId': chainId,
+        'verifyingContract': verifyingContract
+      };
 }
 
 class TypedDataUtils {
@@ -166,12 +189,12 @@ class TypedDataUtils {
       throw ArgumentError("Unsupported data type");
     }
 
-    var encodedTypes = List<String>();
+    var encodedTypes = <String>[];
     encodedTypes.add('bytes32');
-    var encodedValues = List<dynamic>();
+    List<dynamic> encodedValues = [];
     encodedValues.add(hashType(primaryType, types));
 
-    types[primaryType].forEach((TypedDataField field) {
+    types[primaryType]?.forEach((TypedDataField field) {
       var value = data[field.name];
       if (value != null) {
         if (field.type == 'bytes') {
@@ -217,7 +240,7 @@ class TypedDataUtils {
       }
       result += dep +
           '(' +
-          types[dep].map((field) => field.type + ' ' + field.name).join(',') +
+          types[dep]!.map((field) => field.type + ' ' + field.name).join(',') +
           ')';
     });
     return result;
@@ -233,45 +256,21 @@ class TypedDataUtils {
    */
   static List<String> findTypeDependencies(
       String primaryType, Map<String, List<TypedDataField>> types,
-      {List<String> results}) {
+      {List<String>? results}) {
     if (results == null) {
-      results = List();
+      results = [];
     }
     if (results.indexOf(primaryType) >= 0 || !types.containsKey(primaryType)) {
       return results;
     }
     results.add(primaryType);
-    types[primaryType].forEach((TypedDataField field) {
+    types[primaryType]?.forEach((TypedDataField field) {
       findTypeDependencies(field.type, types, results: results).forEach((dep) {
-        if (results.indexOf(dep) == -1) {
-          results.add(dep);
+        if (results?.indexOf(dep) == -1) {
+          results?.add(dep);
         }
       });
     });
     return results;
   }
 }
-
-final JsonSchema TYPED_MESSAGE_SCHEMA = JsonSchema.createSchema(r'''
-{
-  "type": "object",
-  "properties": {
-    "types": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "array",
-        "items": {
-          "type": "object",
-          "properties": {"name": {"type": "string"}, "type": {"type": "string"}},
-          "required": ["name", "type"
-          ]
-        }
-      }
-    },
-    "primaryType": {"type": "string"},
-    "domain": {"type": "object"},
-    "message": {"type": "object"}
-  },
-  "required": ["types", "primaryType", "domain", "message"]
-}
-''');
