@@ -10,6 +10,13 @@ bool isHexPrefixed(String str) {
   return str.substring(0, 2) == '0x';
 }
 
+Uint8List hexToBytes(String hexStr) {
+  final bytes = hex.decode(stripHexPrefix(hexStr));
+  if (bytes is Uint8List) return bytes;
+
+  return Uint8List.fromList(bytes);
+}
+
 String stripHexPrefix(String str) {
   checkNotNull(str);
 

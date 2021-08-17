@@ -3,8 +3,10 @@ import 'dart:typed_data';
 
 import 'package:buffer/buffer.dart';
 import 'package:convert/convert.dart';
+import 'package:ethereum_util/ethereum_util.dart';
 import 'package:ethereum_util/src/abi.dart' as ethAbi;
 import 'package:ethereum_util/src/bytes.dart';
+import 'package:ethereum_util/src/keccak.dart' as keccak;
 import 'package:ethereum_util/src/signature.dart';
 import 'package:ethereum_util/src/utils.dart';
 
@@ -20,8 +22,9 @@ String concatSig(Uint8List r, Uint8List s, Uint8List v) {
   return addHexPrefix(rStr + sStr + vStr);
 }
 
-String signTypedData(Uint8List privateKey, MsgParams msgParams) {
-  var message = TypedDataUtils.sign(msgParams.data);
+String signTypedData(
+    Uint8List privateKey, MsgParams msgParams, String version) {
+  var message = TypedDataUtils.sign(msgParams.data, version);
   var sig = sign(message, privateKey);
   return concatSig(toBuffer(sig.r), toBuffer(sig.s), toBuffer(sig.v));
 }
@@ -62,15 +65,16 @@ String? normalize(dynamic input) {
 
 class MsgParams {
   TypedData data;
-  String sig;
+  String? sig;
 
-  MsgParams({required this.data, required this.sig});
+  MsgParams({required this.data, this.sig});
 
   Uint8List? recoverPublicKey() {
-    var sigParams = fromRpcSig(sig);
+    if (sig == null) return null;
+    var sigParams = fromRpcSig(sig!);
     return recoverPublicKeyFromSignature(
         ECDSASignature(sigParams.r, sigParams.s, sigParams.v),
-        TypedDataUtils.sign(data));
+        TypedDataUtils.sign(data, 'V1'));
   }
 }
 
@@ -163,65 +167,139 @@ class EIP712Domain {
 }
 
 class TypedDataUtils {
-  static Uint8List sign(TypedData typedData) {
+  static Uint8List sign(TypedData typedData, String version) {
     var parts = BytesBuffer();
     parts.add(hex.decode('1901'));
-    parts.add(hashStruct('EIP712Domain', typedData.domain, typedData.types));
     parts.add(
-        hashStruct(typedData.primaryType, typedData.message, typedData.types));
-    return sha3(parts.toBytes());
+        hashStruct('EIP712Domain', typedData.domain, typedData.types, version));
+    if (typedData.primaryType != 'EIP712Domain') {
+      parts.add(hashStruct(
+          typedData.primaryType, typedData.message, typedData.types, version));
+    }
+    return keccak.keccak256(parts.toBytes());
   }
 
   static Uint8List hashStruct(String primaryType, dynamic data,
-      Map<String, List<TypedDataField>> types) {
-    return sha3(encodeData(primaryType, data, types));
+      Map<String, List<TypedDataField>> types, String version) {
+    return keccak.keccak256(encodeData(primaryType, data, types, version));
   }
 
   /// Hashes the type of an object
   static Uint8List hashType(String primaryType, dynamic types) {
-    return sha3(
+    return keccak.keccak256(
         Uint8List.fromList(utf8.encode(encodeType(primaryType, types))));
   }
 
   static Uint8List encodeData(String primaryType, dynamic data,
-      Map<String, List<TypedDataField>> types) {
+      Map<String, List<TypedDataField>> types, String version) {
     if (!(data is Map<String, dynamic>) && !(data is EIP712Domain)) {
       throw ArgumentError("Unsupported data type");
     }
 
-    var encodedTypes = <String>[];
-    encodedTypes.add('bytes32');
+    final encodedTypes = <String>['bytes32'];
     List<dynamic> encodedValues = [];
     encodedValues.add(hashType(primaryType, types));
 
-    types[primaryType]?.forEach((TypedDataField field) {
-      var value = data[field.name];
-      if (value != null) {
-        if (field.type == 'bytes') {
-          encodedTypes.add('bytes32');
-          value = sha3(value);
-          encodedValues.add(value);
-        } else if (field.type == 'string') {
-          encodedTypes.add('bytes32');
+    if (version == 'V4') {
+      List<dynamic> encodeField(String name, String type, dynamic value) {
+        if (types[type] != null) {
+          return [
+            'bytes32',
+            value == null // eslint-disable-line no-eq-null
+                ? '0x0000000000000000000000000000000000000000000000000000000000000000'
+                : keccak.keccak256((encodeData(type, value, types, version))),
+          ];
+        }
+
+        if (value == null) {
+          throw ArgumentError(
+              'missing value for field ${name} of type ${type}');
+        }
+
+        if (type == 'bytes') {
+          return ['bytes32', keccak.keccak256(value)];
+        }
+
+        if (type == 'string') {
           // convert string to buffer - prevents ethUtil from interpreting strings like '0xabcd' as hex
           if (value is String) {
             value = Uint8List.fromList(utf8.encode(value));
           }
-          value = sha3(value);
-          encodedValues.add(value);
-        } else if (types[field.type] != null) {
-          encodedTypes.add('bytes32');
-          value = sha3(encodeData(field.type, value, types));
-          encodedValues.add(value);
-        } else if (field.type.lastIndexOf(']') == field.type.length - 1) {
-          throw new ArgumentError(
-              'Arrays currently unimplemented in encodeData');
-        } else {
-          encodedTypes.add(field.type);
-          encodedValues.add(value);
+          return ['bytes32', keccak.keccak256(value)];
         }
+
+        if (type.lastIndexOf(']') == type.length - 1) {
+          final parsedType = type.substring(0, type.lastIndexOf('['));
+          final typeValuePairs = value
+              .map(
+                (item) => encodeField(name, parsedType, item),
+              )
+              .toList();
+
+          final List<String> tList =
+              (typeValuePairs as List).map((l) => l[0].toString()).toList();
+          final List<dynamic> vList = typeValuePairs.map((l) => l[1]).toList();
+          return [
+            'bytes32',
+            keccak.keccak256(
+              ethAbi.rawEncode(
+                tList,
+                vList,
+              ),
+            ),
+          ];
+        }
+
+        return [type, value];
       }
-    });
+
+      final fields = types[primaryType];
+      fields?.forEach((field) {
+        final List<dynamic> result = encodeField(
+          field.name,
+          field.type,
+          data[field.name],
+        );
+        encodedTypes.add(result[0]);
+        encodedValues.add(result[1]);
+      });
+    } else {
+      types[primaryType]?.forEach((TypedDataField field) {
+        var value = data[field.name];
+        if (value != null) {
+          if (field.type == 'bytes') {
+            encodedTypes.add('bytes32');
+            if (value is String) {
+              if (isHexPrefixed(value)) {
+                value = keccak.keccak256(hexToBytes(value));
+              } else {
+                value = keccak.keccak256(Uint8List.fromList(utf8.encode(value)));
+              }
+            }
+            encodedValues.add(value);
+          } else if (field.type == 'string') {
+            encodedTypes.add('bytes32');
+            // convert string to buffer - prevents ethUtil from interpreting strings like '0xabcd' as hex
+            if (value is String) {
+              value = Uint8List.fromList(utf8.encode(value));
+            }
+            value = keccak.keccak256(value);
+            encodedValues.add(value);
+          } else if (types[field.type] != null) {
+            encodedTypes.add('bytes32');
+            value =
+                keccak.keccak256(encodeData(field.type, value, types, version));
+            encodedValues.add(value);
+          } else if (field.type.lastIndexOf(']') == field.type.length - 1) {
+            throw new ArgumentError(
+                'Arrays are unimplemented in encodeData; use V4 extension');
+          } else {
+            encodedTypes.add(field.type);
+            encodedValues.add(value);
+          }
+        }
+      });
+    }
 
     return ethAbi.rawEncode(encodedTypes, encodedValues);
   }
@@ -260,14 +338,14 @@ class TypedDataUtils {
     if (results == null) {
       results = [];
     }
-    if (results.indexOf(primaryType) >= 0 || !types.containsKey(primaryType)) {
+    if (results.contains(primaryType) || !types.containsKey(primaryType)) {
       return results;
     }
     results.add(primaryType);
     types[primaryType]?.forEach((TypedDataField field) {
       findTypeDependencies(field.type, types, results: results).forEach((dep) {
-        if (results?.indexOf(dep) == -1) {
-          results?.add(dep);
+        if (!results!.contains(dep)) {
+          results.add(dep);
         }
       });
     });
