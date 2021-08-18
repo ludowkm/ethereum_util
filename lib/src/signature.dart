@@ -16,6 +16,7 @@ import 'package:pointycastle/key_generators/ec_key_generator.dart';
 import 'package:pointycastle/macs/hmac.dart';
 import 'package:pointycastle/pointycastle.dart';
 import 'package:pointycastle/signers/ecdsa_signer.dart';
+import 'keccak.dart' as k;
 
 final ECDomainParameters params = ECCurve_secp256k1();
 final BigInt _halfCurveOrder = params.n ~/ BigInt.two;
@@ -71,6 +72,13 @@ Uint8List publicKeyToAddress(Uint8List publicKey) {
 
   final hashed = sha3digest.process(publicKey);
   return Uint8List.view(hashed.buffer, _shaBytes - 20);
+}
+
+Uint8List publicKeyToAddress2(Uint8List publicKey) {
+  assert(publicKey.length == 64);
+  final hashed = k.keccak256(publicKey);
+  assert(hashed.length == 32);
+  return hashed.sublist(12, 32);
 }
 
 Uint8List privateKeyToAddress(Uint8List privateKey) {

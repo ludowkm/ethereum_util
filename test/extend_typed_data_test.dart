@@ -4,9 +4,87 @@ import 'dart:typed_data';
 import 'package:ethereum_util/ethereum_util.dart';
 import 'package:ethereum_util/src/bytes.dart';
 import 'package:ethereum_util/src/keccak.dart' as keccak;
+import 'package:ethereum_util/src/typed_data.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('signTypedData and recoverTypedSignature V1 - single messages', () {
+    final List<Map<String, dynamic>> rawTypedData = [
+      {"type": "string", "name": "message", "value": "Hi, Alice!"}
+    ];
+    final typedData =
+        rawTypedData.map((e) => EIP712TypedData.fromJson(e)).toList();
+
+    const address = '0x29c76e6ad8f28bb1004902578fb108c507be341b';
+    const privKeyHex =
+        '4af1bceebf7f3634ec3cff8a2c38e51178d5d4ce585c52d6043e5e2cc3418bb0';
+
+    final privKey = hexToBytes(privKeyHex);
+
+    final signature = signTypedDataV1(privKey, typedData);
+
+    expect(signature,
+        '0x49e75d475d767de7fcc67f521e0d86590723d872e6111e51c393e8c1e2f21d032dfaf5833af158915f035db6af4f37bf2d5d29781cd81f28a44c5cb4b9d241531b');
+
+    final recovered = recoverPublicKeyV1(typedData, signature);
+
+    expect(address, bufferToHex(publicKeyToAddress2(recovered!)));
+  });
+  //////////////////////////////////////////////////////////////////////////////
+  test('signTypedData and recoverTypedSignature V1 - multiple messages', () {
+    final List<Map<String, dynamic>> rawTypedData = [
+      {"type": "string", "name": "message", "value": "Hi, Alice!"},
+      {"type": "uint8", "name": "value", "value": 10}
+    ];
+    final typedData =
+        rawTypedData.map((e) => EIP712TypedData.fromJson(e)).toList();
+
+    const address = '0x29c76e6ad8f28bb1004902578fb108c507be341b';
+    const privKeyHex =
+        '4af1bceebf7f3634ec3cff8a2c38e51178d5d4ce585c52d6043e5e2cc3418bb0';
+
+    final privKey = hexToBytes(privKeyHex);
+
+    final signature = signTypedDataV1(privKey, typedData);
+    final recovered = recoverPublicKeyV1(typedData, signature);
+
+    expect(address, bufferToHex(publicKeyToAddress2(recovered!)));
+  });
+  //////////////////////////////////////////////////////////////////////////////
+  test('typedSignatureHash - single value', () {
+    final rawTypedData = [
+      {"type": "string", "name": "message", "value": "Hi, Alice!"}
+    ];
+    final typedData =
+        rawTypedData.map((e) => EIP712TypedData.fromJson(e)).toList();
+    final hash = TypedDataUtils.typedSignatureHash(typedData);
+    expect(bufferToHex(hash),
+        '0x14b9f24872e28cc49e72dc104d7380d8e0ba84a3fe2e712704bcac66a5702bd5');
+  });
+  //////////////////////////////////////////////////////////////////////////////
+  test('typedSignatureHash - multiple values', () {
+    final rawTypedData = [
+      {"type": "string", "name": "message", "value": "Hi, Alice!"},
+      {"type": "uint8", "name": "value", "value": 10}
+    ];
+    final typedData =
+        rawTypedData.map((e) => EIP712TypedData.fromJson(e)).toList();
+    final hash = TypedDataUtils.typedSignatureHash(typedData);
+    expect(bufferToHex(hash),
+        '0xf7ad23226db5c1c00ca0ca1468fd49c8f8bbc1489bc1c382de5adc557a69c229');
+  });
+  //////////////////////////////////////////////////////////////////////////////
+  test('typedSignatureHash - bytes', () {
+    final rawTypedData = [
+      {"type": "bytes", "name": "message", "value": "0xdeadbeaf"}
+    ];
+    final typedData =
+        rawTypedData.map((e) => EIP712TypedData.fromJson(e)).toList();
+    final hash = TypedDataUtils.typedSignatureHash(typedData);
+    expect(bufferToHex(hash),
+        '0x6c69d03412450b174def7d1e48b3bcbbbd8f51df2e76e2c5b3a5d951125be3a9');
+  });
+  //////////////////////////////////////////////////////////////////////////////
   test('signedTypeData', () {
     final Map<String, dynamic> rawTypedData = {
       "types": {

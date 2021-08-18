@@ -29,9 +29,22 @@ String signTypedData(
   return concatSig(toBuffer(sig.r), toBuffer(sig.s), toBuffer(sig.v));
 }
 
+String signTypedDataV1(Uint8List privateKey, List<EIP712TypedData> typedData) {
+  var message = TypedDataUtils.hashV1(typedData);
+  var sig = sign(message, privateKey);
+  return concatSig(toBuffer(sig.r), toBuffer(sig.s), toBuffer(sig.v));
+}
+
 /// Return address of a signer that did signTypedData.
 /// Expects the same data that were used for signing. sig is a prefixed signature.
 String? recoverTypedSignature(MsgParams msgParams) {
+  var publicKey = msgParams.recoverPublicKey();
+  if (publicKey == null) return null;
+  var sender = publicKeyToAddress(publicKey);
+  return bufferToHex(sender);
+}
+
+String? recoverTypedSignatureV1(MsgParams msgParams) {
   var publicKey = msgParams.recoverPublicKey();
   if (publicKey == null) return null;
   var sender = publicKeyToAddress(publicKey);
@@ -76,6 +89,31 @@ class MsgParams {
         ECDSASignature(sigParams.r, sigParams.s, sigParams.v),
         TypedDataUtils.sign(data, 'V1'));
   }
+}
+
+Uint8List? recoverPublicKeyV1(List<EIP712TypedData> data, String? sig) {
+  if (sig == null) return null;
+  var sigParams = fromRpcSig(sig);
+  return recoverPublicKeyFromSignature(
+      ECDSASignature(sigParams.r, sigParams.s, sigParams.v),
+      TypedDataUtils.hashV1(data));
+}
+
+class EIP712TypedData {
+  String name;
+  String type;
+  dynamic value;
+
+  EIP712TypedData({required this.name, required this.type, this.value});
+
+  factory EIP712TypedData.fromJson(Map<String, dynamic> json) =>
+      EIP712TypedData(
+          name: json['name'] as String,
+          type: json['type'] as String,
+          value: json['value']);
+
+  Map<String, dynamic> toJson() =>
+      <String, dynamic>{'name': name, 'type': type, 'value': value};
 }
 
 class TypedData {
@@ -184,6 +222,10 @@ class TypedDataUtils {
     return keccak.keccak256(encodeData(primaryType, data, types, version));
   }
 
+  static Uint8List hashV1(List<EIP712TypedData> typedData) {
+    return typedSignatureHash(typedData);
+  }
+
   /// Hashes the type of an object
   static Uint8List hashType(String primaryType, dynamic types) {
     return keccak.keccak256(
@@ -273,7 +315,8 @@ class TypedDataUtils {
               if (isHexPrefixed(value)) {
                 value = keccak.keccak256(hexToBytes(value));
               } else {
-                value = keccak.keccak256(Uint8List.fromList(utf8.encode(value)));
+                value =
+                    keccak.keccak256(Uint8List.fromList(utf8.encode(value)));
               }
             }
             encodedValues.add(value);
@@ -350,5 +393,124 @@ class TypedDataUtils {
       });
     });
     return results;
+  }
+
+  static Uint8List typedSignatureHash(List<EIP712TypedData> typedData) {
+    final data = typedData.map((e) {
+      if (e.type == 'bytes') {
+        if (isHexPrefixed(e.value)) {
+          return hexToBytes(e.value);
+        } else {
+          return Uint8List.fromList(utf8.encode(e.value));
+        }
+      }
+      return e.value;
+    }).toList();
+    final types = typedData.map((e) {
+      return e.type;
+    }).toList();
+    final schema = typedData.map((e) {
+      return '${e.type} ${e.name}';
+    }).toList();
+
+    return soliditySHA3(
+      ['bytes32', 'bytes32'],
+      [
+        soliditySHA3(
+            List.generate(typedData.length, (index) => 'string'), schema),
+        soliditySHA3(types, data),
+      ],
+    );
+  }
+
+  static Uint8List soliditySHA3(List<String> types, values) {
+    return keccak.keccak256(solidityPack(types, values));
+  }
+
+  static Uint8List solidityPack(List<String> types, values) {
+    if (types.length != values.length) {
+      throw new ArgumentError('Number of types are not matching the values');
+    }
+    var ret = BytesBuffer();
+    for (var i = 0; i < types.length; i++) {
+      var type = elementaryName(types[i]);
+      var value = values[i];
+      ret.add(solidityHexValue(type, value, null));
+    }
+    return ret.toBytes();
+  }
+
+  static Uint8List solidityHexValue(String type, value, bitsize) {
+    // pass in bitsize = null if use default bitsize
+    var size, num;
+    if (isArray(type)) {
+      var subType = type.replaceAll('/\[.*?\]/', '');
+      if (!isArray(subType)) {
+        var arraySize = parseTypeArray(type);
+        if (arraySize != 'dynamic' &&
+            arraySize != 0 &&
+            value.length > arraySize) {
+          throw new ArgumentError('Elements exceed array size: ' + arraySize);
+        }
+      }
+      var ret = BytesBuffer();
+      value?.forEach((v) {
+        ret.add(solidityHexValue(subType, v, 256));
+      });
+      return ret.toBytes();
+    } else if (type == 'bytes') {
+      return value;
+    } else if (type == 'string') {
+      return Uint8List.fromList(utf8.encode(value));
+    } else if (type == 'bool') {
+      bitsize = bitsize != null ? 256 : 8;
+      var padding = List.generate((bitsize) / 4, (index) => '').join('0');
+      return Uint8List.fromList(
+          hex.decode(value ? padding + '1' : padding + '0'));
+    } else if (type == 'address') {
+      var bytesize = 20;
+      if (bitsize != null) {
+        bytesize = bitsize ~/ 8;
+      }
+      return setLengthLeft(value, bytesize);
+    } else if (type.startsWith('bytes')) {
+      size = parseTypeN(type);
+      if (size < 1 || size > 32) {
+        throw new ArgumentError('Invalid bytes<N> width: ' + size);
+      }
+
+      return setLengthRight(value, size);
+    } else if (type.startsWith('uint')) {
+      size = parseTypeN(type);
+      if ((size % 8 != 0) || (size < 8) || (size > 256)) {
+        throw new ArgumentError('Invalid uint<N> width: ' + size);
+      }
+
+      num = parseNumber(value);
+      if (num.bitLength > size) {
+        throw new ArgumentError(
+            'Supplied uint exceeds width: ' + size + ' vs ' + num.bitLength);
+      }
+
+      bitsize = bitsize != null ? 256 : size;
+      return encodeBigInt(num, length: bitsize ~/ 8);
+    } else if (type.startsWith('int')) {
+      size = parseTypeN(type);
+      if ((size % 8 != 0) || (size < 8) || (size > 256)) {
+        throw new ArgumentError('Invalid int<N> width: ' + size);
+      }
+
+      num = parseNumber(value);
+      if (num.bitLength > size) {
+        throw new ArgumentError(
+            'Supplied int exceeds width: ' + size + ' vs ' + num.bitLength);
+      }
+
+      bitsize = bitsize != null ? 256 : size;
+      return encodeBigInt(num.toUnsigned(size), length: bitsize ~/ 8);
+    } else {
+      // FIXME: support all other types
+      throw new ArgumentError('Unsupported or invalid type: ' + type);
+    }
   }
 }
